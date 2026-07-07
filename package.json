@@ -1,0 +1,36 @@
+{
+  "name": "defcod-engine",
+  "version": "0.1.0",
+  "description": "In-memory secret-leak scanner for AI-built apps: leaked API keys, committed .env files, Supabase service_role in client code. Nothing touches disk, nothing is stored.",
+  "license": "MIT",
+  "author": "Nqspq",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nqspq/defcod-engine.git"
+  },
+  "homepage": "https://defcod.vercel.app",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "scripts",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "tsc",
+    "test": "tsx scripts/test-scanner.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.22.5",
+    "typescript": "^5"
+  }
+}

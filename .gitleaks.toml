@@ -1,0 +1,15 @@
+# gitleaks config for defcod-engine.
+# Inherit the full default ruleset.
+[extend]
+useDefault = true
+
+# Safety net: the test script builds its fake keys at runtime by joining
+# string fragments, so scanners (gitleaks and this engine itself) find
+# nothing in the source. The allowlist below is a backstop in case a
+# future change reintroduces literal-looking test vectors.
+[[allowlists]]
+description = "Scanner test vectors (fake keys, assembled at runtime)"
+paths = [
+  '''scripts/test-scanner\.ts''',
+  '''(^|/)node_modules/''',
+]
