@@ -10,6 +10,22 @@ export {
   type FindingType,
   type Severity,
 } from "./rules";
+// Списки-фильтры шума и их проверки. Вынесены в публичный API, чтобы их было
+// легко пополнять и тестировать снаружи движка.
+export {
+  PUBLIC_ENV_NAMES,
+  PUBLIC_ENV_PREFIXES,
+  SENSITIVE_ENV_MARKERS,
+  KNOWN_PUBLIC_TEST_VALUES,
+  classifyEnvFile,
+  isPublicEnvVar,
+  isLikelySecretValue,
+  isKnownPublicTestValue,
+  isExampleFile,
+  hasPrivateKeyBody,
+  shannonEntropy,
+  type EnvClassification,
+} from "./rules";
 export {
   fetchRepoFiles,
   parseGitHubUrl,

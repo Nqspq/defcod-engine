@@ -7,7 +7,10 @@ import {
   JWT_RE,
   KEY_RULES,
   PRIVATE_KEY_RE,
-  envLineHasRealValue,
+  classifyEnvFile,
+  hasPrivateKeyBody,
+  isExampleFile,
+  isLikelySecretValue,
   isRealEnvFile,
   isServiceRoleJwt,
   looksLikeClientCode,
@@ -92,21 +95,29 @@ export function scanFiles(files: ScannedFile[]): ScanOutput {
     }
     filesScanned++;
 
-    // 1. Закоммиченный .env с реальными значениями — критично.
+    // 1. Закоммиченный .env. Уровень зависит от того, ЧТО внутри:
+    //    есть чувствительные значения — критично, только публичные — совет.
     if (isRealEnvFile(file.path)) {
-      const realKeys: string[] = [];
-      for (const line of file.content.split("\n")) {
-        const hit = envLineHasRealValue(line);
-        if (hit) realKeys.push(hit.key);
-      }
-      if (realKeys.length > 0) {
+      const { sensitiveKeys, publicKeys } = classifyEnvFile(file.content);
+      if (sensitiveKeys.length > 0) {
         push(
           {
             type: "env_file",
             severity: "critical",
             file: file.path,
             line: 1,
-            masked: realKeys.slice(0, 8).join(", "),
+            masked: sensitiveKeys.slice(0, 8).join(", "),
+          },
+          file.path,
+        );
+      } else if (publicKeys.length > 0) {
+        push(
+          {
+            type: "env_file_public",
+            severity: "info",
+            file: file.path,
+            line: 1,
+            masked: publicKeys.slice(0, 8).join(", "),
           },
           file.path,
         );
@@ -148,8 +159,10 @@ export function scanFiles(files: ScannedFile[]): ScanOutput {
       );
     }
 
-    // 4. Приватные ключи (PEM).
+    // 4. Приватные ключи (PEM). Одинокого заголовка недостаточно: нужно тело ключа,
+    //    иначе ловим код, который собирает ключ из переменной окружения.
     for (const m of file.content.matchAll(PRIVATE_KEY_RE)) {
+      if (!hasPrivateKeyBody(file.content, m.index + m[0].length)) continue;
       push(
         {
           type: "private_key",
@@ -163,9 +176,16 @@ export function scanFiles(files: ScannedFile[]): ScanOutput {
     }
 
     // 5. Захардкоженные пароли/секреты — уровень "важно".
-    for (const m of file.content.matchAll(HARDCODED_SECRET_RE)) {
+    // В файлах-образцах (.env.example, config.sample.ts) значения — заглушки по
+    // определению, поэтому это правило по ним не работает. Ключи провайдеров выше
+    // проверяются и там: настоящий ключ в образце — всё равно утечка.
+    for (const m of isExampleFile(file.path)
+      ? []
+      : file.content.matchAll(HARDCODED_SECRET_RE)) {
       const value = m[2];
-      if (looksLikePlaceholder(value)) continue;
+      // Отсеиваем шум: названия заголовков, заглушки, публичные тестовые ключи,
+      // словарные строки без энтропии.
+      if (!isLikelySecretValue(m[1], value)) continue;
       // Значение уже поймано правилом выше (например, это sk-... ключ)? Не дублируем.
       if (seen.has(`openai_key:${file.path}:${value}`)) continue;
       if ([...seen].some((k) => k.endsWith(`:${file.path}:${value}`))) continue;

@@ -35,6 +35,18 @@ const V = {
   adminPw: j("hunter2", "hunter2"),
   pemHeader: j("-----BEGIN ", "PRIV", "ATE KEY-----"),
   pemFooter: j("-----END ", "PRIV", "ATE KEY-----"),
+  // Тело фейкового ключа: ~1600 символов base64, как у настоящего RSA-2048.
+  // Одного заголовка теперь недостаточно — движок требует тело (см. баг 1).
+  pemBody: Array.from({ length: 26 }, (_, i) =>
+    j(
+      "MIIEvQIBADANBgkq",
+      "hkiG9w0BAQEFAASC",
+      "BKcwggSjAgEAAoIB",
+      "AQDb9xKmN4pQrS",
+      String(i % 10),
+      String((i + 3) % 10),
+    ),
+  ).join("\n"),
   // Supabase service_role JWT собираем честно: заголовок + payload + подпись.
   supabaseJwt: [
     b64u(JSON.stringify({ alg: "HS256", typ: "JWT" })),
@@ -110,12 +122,7 @@ const files: ScannedFile[] = [
   },
   {
     path: "keys/deploy.pem",
-    content: [
-      V.pemHeader,
-      j("MIIEvQIBADANBgkq", "hkiG9w0BAQEFAASC"),
-      "(содержимое сокращено — для теста достаточно заголовка)",
-      V.pemFooter,
-    ].join("\n"),
+    content: [V.pemHeader, V.pemBody, V.pemFooter].join("\n"),
   },
   {
     path: "multi-keys.js",
@@ -294,6 +301,442 @@ const { findings: cleanPasted } = scanFiles([
   { path: "pasted-code", content: "function add(a, b) {\n  return a + b;\n}" },
 ]);
 expect(cleanPasted.length === 0, "чистый вставленный фрагмент не даёт находок");
+
+// ============================================================================
+// Борьба с ложными срабатываниями (v0.1.1)
+// Три источника шума, найденные прогоном по 54 публичным вайбкод-репозиториям.
+// На каждый баг — пара тестов: шум НЕ должен находиться, настоящая утечка
+// того же типа — должна. Иначе, убирая шум, легко потерять детект.
+// ============================================================================
+
+// Короткий помощник: типы находок в одном псевдо-файле.
+const scanOne = (path: string, content: string) =>
+  scanFiles([{ path, content }]).findings;
+const typesOf = (path: string, content: string) =>
+  scanOne(path, content).map((f) => f.type);
+
+// --- Баг 1: приватный ключ (PEM) — нужен не только заголовок, но и тело ---
+console.log("\nБаг 1 — приватные ключи (PEM):");
+
+// ЛОЖНОЕ: код собирает ключ из переменной окружения. Заголовок и подвал есть,
+// тела ключа нет. Именно так выглядели все 17 ложных находок в реальном прогоне.
+const pemFromEnv = [
+  "const privateKey = [",
+  j('  "', V.pemHeader, '",'),
+  "  process.env.GOOGLE_PRIVATE_KEY,",
+  j('  "', V.pemFooter, '",'),
+  '].join("\\n");',
+].join("\n");
+expect(
+  !typesOf("supabase/functions/sign/index.ts", pemFromEnv).includes("private_key"),
+  "ключ из переменной окружения НЕ считается утечкой (было 17 ложных)",
+);
+
+// ЛОЖНОЕ: одинокий заголовок как строковая константа.
+const pemHeaderOnly = j('const PEM_HEADER = "', V.pemHeader, '";');
+expect(
+  !typesOf("src/lib/crypto.ts", pemHeaderOnly).includes("private_key"),
+  "одинокий заголовок PEM НЕ считается утечкой",
+);
+
+// ЛОЖНОЕ: заголовок и подвал вплотную, между ними ничего.
+expect(
+  !typesOf("src/empty.ts", [V.pemHeader, V.pemFooter].join("\n")).includes("private_key"),
+  "заголовок + подвал без тела НЕ считается утечкой",
+);
+
+// ЛОЖНОЕ: шаблон с подстановкой {{PRIVATE_KEY}} в конфиге.
+const pemTemplate = [V.pemHeader, "{{PRIVATE_KEY}}", V.pemFooter].join("\n");
+expect(
+  !typesOf("deploy/config.yaml", pemTemplate).includes("private_key"),
+  "шаблон-заглушка вместо тела ключа НЕ считается утечкой",
+);
+
+// НАСТОЯЩЕЕ: полноценный файл ключа — по-прежнему находится.
+expect(
+  typesOf("keys/id_rsa", [V.pemHeader, V.pemBody, V.pemFooter].join("\n")).includes(
+    "private_key",
+  ),
+  "настоящий файл приватного ключа по-прежнему находится",
+);
+
+// НАСТОЯЩЕЕ: ключ вписан прямо в JS-строку с экранированными переводами строк.
+const pemInlineJs = j(
+  'const key = "',
+  V.pemHeader,
+  "\\n",
+  V.pemBody.split("\n").join("\\n"),
+  "\\n",
+  V.pemFooter,
+  '";',
+);
+expect(
+  typesOf("src/server/sign.js", pemInlineJs).includes("private_key"),
+  "ключ, вписанный в JS-строку через \\n, находится",
+);
+
+// НАСТОЯЩЕЕ: посторонний шаблонный код ДАЛЬШЕ в файле не должен глушить находку.
+// (Проверка окна: признак подстановки ищем только сразу за заголовком.)
+const pemThenTemplate = [
+  V.pemHeader,
+  V.pemBody,
+  V.pemFooter,
+  "",
+  "// ниже — совсем другой код, к ключу не относится",
+  "const url = `${base}/api/v1`;",
+  "const cfg = process.env.SOME_OTHER_VALUE;",
+].join("\n");
+expect(
+  typesOf("keys/service-account.pem", pemThenTemplate).includes("private_key"),
+  "шаблонный код ниже в файле не глушит настоящий ключ",
+);
+
+// НАСТОЯЩЕЕ: ключ без закрывающей строки (файл обрезан) — тело всё равно есть.
+expect(
+  typesOf("keys/truncated.pem", [V.pemHeader, V.pemBody].join("\n")).includes("private_key"),
+  "ключ без закрывающей строки находится (тело на месте)",
+);
+
+// --- Баг 2: уровень .env зависит от содержимого ---
+console.log("\nБаг 2 — уровень закоммиченного .env:");
+
+// anon-ключ Supabase: публичен по замыслу, собираем честный JWT с role=anon.
+const anonJwt = [
+  b64u(JSON.stringify({ alg: "HS256", typ: "JWT" })),
+  b64u(
+    JSON.stringify({
+      iss: "supabase",
+      ref: "abcdefghijklmnop",
+      role: "anon",
+      iat: 1751500000,
+      exp: 2067076000,
+    }),
+  ),
+  b64u("anonanonanonanonanonanon"),
+].join(".");
+
+// ТОЛЬКО ПУБЛИЧНОЕ: ровно тот набор, что был в 12 из 15 репозиториев.
+const envPublicOnly = [
+  "VITE_SUPABASE_URL=https://abcdefghijklmnop.supabase.co",
+  j("VITE_SUPABASE_ANON_KEY=", anonJwt),
+  "VITE_SUPABASE_PROJECT_ID=abcdefghijklmnop",
+  j("SUPABASE_PUBLISHABLE_KEY=", "sb_publishable_", "Ab9Qz7Lm3Np5Rt8Vw2Xy4"),
+].join("\n");
+const publicEnvFindings = scanOne(".env", envPublicOnly);
+expect(
+  publicEnvFindings.length === 1 && publicEnvFindings[0].type === "env_file_public",
+  ".env только с публичными значениями → тип env_file_public (было critical)",
+);
+expect(
+  publicEnvFindings[0]?.severity === "info",
+  ".env только с публичными значениями → уровень «совет»",
+);
+expect(
+  !publicEnvFindings.some((f) => f.type === "env_file"),
+  ".env только с публичными значениями больше НЕ помечается как критичный",
+);
+
+// НАСТОЯЩЕЕ: service_role в .env — критично, как и раньше.
+const envServiceRole = [
+  "VITE_SUPABASE_URL=https://abcdefghijklmnop.supabase.co",
+  j("SUPABASE_SERVICE_ROLE_KEY=", V.supabaseJwt),
+].join("\n");
+const srFindings = scanOne(".env", envServiceRole);
+expect(
+  srFindings.some((f) => f.type === "env_file" && f.severity === "critical"),
+  ".env с service_role по-прежнему критичен",
+);
+
+// НАСТОЯЩЕЕ: публичный префикс НЕ делает значение безопасным.
+// VITE_OPENAI_API_KEY — реальная утечка, причём худшего вида (уезжает в браузер).
+const envViteSecret = [
+  "VITE_SUPABASE_URL=https://abcdefghijklmnop.supabase.co",
+  j("VITE_OPENAI_", "API_KEY=", V.openai),
+].join("\n");
+const viteFindings = scanOne(".env", envViteSecret);
+expect(
+  viteFindings.some((f) => f.type === "env_file" && f.severity === "critical"),
+  "префикс VITE_ НЕ делает настоящий ключ безопасным — остаётся критично",
+);
+
+// НАСТОЯЩЕЕ: пароль базы данных в .env — критично.
+const envDbPassword = [
+  "APP_NAME=my-app",
+  j("DATABASE_URL=", V.dbUrl),
+].join("\n");
+expect(
+  scanOne(".env", envDbPassword).some(
+    (f) => f.type === "env_file" && f.severity === "critical",
+  ),
+  ".env с паролем базы данных критичен",
+);
+
+// .env.example по-прежнему игнорируется целиком.
+expect(
+  scanOne(".env.example", envPublicOnly).length === 0,
+  ".env.example не даёт находок",
+);
+
+// У нового типа есть заготовленные тексты на обоих языках.
+const publicEnvExplained = cannedExplanations(publicEnvFindings);
+expect(
+  publicEnvExplained.every(
+    (f) =>
+      f.texts.en.title &&
+      f.texts.en.explanation &&
+      f.texts.en.fix.length > 0 &&
+      f.texts.ru.title &&
+      f.texts.ru.explanation &&
+      f.texts.ru.fix.length > 0 &&
+      f.texts.en.title !== f.texts.ru.title,
+  ),
+  "у env_file_public есть объяснение и шаги починки на обоих языках",
+);
+
+// --- Баг 3: hardcoded_secret перестал шуметь ---
+console.log("\nБаг 3 — шум в hardcoded_secret:");
+
+// ЛОЖНОЕ: имя переменной описывает НАЗВАНИЕ заголовка, а не значение.
+expect(
+  !typesOf("src/api.ts", j("const api", 'KeyHeader = "X-API-Key";')).includes(
+    "hardcoded_secret",
+  ),
+  'apiKeyHeader = "X-API-Key" НЕ находка (название заголовка)',
+);
+expect(
+  !typesOf("src/api.ts", j("const auth", 'TokenHeader = "Authorization";')).includes(
+    "hardcoded_secret",
+  ),
+  'authTokenHeader = "Authorization" НЕ находка',
+);
+
+// ЛОЖНОЕ: очевидные заглушки.
+const placeholders = [
+  j("const password", 'Placeholder = "••••••••";'),
+  j("const api", 'Key = "your-api-key-here";'),
+  j("const ", 'secret = "changeme123";'),
+  j("const ", 'apiKey = "<YOUR_KEY_HERE>";'),
+  j("const ", 'password = "xxxxxxxx";'),
+  j("const ", 'secret = "${process.env.SECRET}";'),
+];
+for (const line of placeholders) {
+  expect(
+    !typesOf("src/config.ts", line).includes("hardcoded_secret"),
+    `заглушка НЕ находка: ${line.slice(0, 42)}…`,
+  );
+}
+
+// ЛОЖНОЕ: публичные тестовые ключи из документации сервисов.
+expect(
+  !typesOf(
+    "src/captcha.ts",
+    j("const turnstile", 'Secret = "1x', '0000000000000000000000000000000AA";'),
+  ).includes("hardcoded_secret"),
+  "тестовый ключ Cloudflare Turnstile НЕ находка",
+);
+expect(
+  !typesOf("src/pay.ts", j("const stripe", 'ApiKey = "sk', '_test_4eC39HqLyjWDarjtT1zdp7dc";')).includes(
+    "hardcoded_secret",
+  ),
+  "тестовый ключ Stripe НЕ находка",
+);
+
+// ЛОЖНОЕ: значение — это ИМЯ переменной окружения, а не сам секрет.
+expect(
+  !typesOf("docs/setup.md", j("Нужные ", 'secrets = "ANTHROPIC_API_KEY";')).includes(
+    "hardcoded_secret",
+  ),
+  "значение-имя переменной (ANTHROPIC_API_KEY) НЕ находка",
+);
+
+// ЛОЖНОЕ: имя переменной помечено как тестовое.
+expect(
+  !typesOf("src/test-utils.ts", j("const TEST_", 'SECRET = "abcdefghij";')).includes(
+    "hardcoded_secret",
+  ),
+  "TEST_SECRET НЕ находка",
+);
+
+// ЛОЖНОЕ: одно словарное слово без цифр и символов.
+expect(
+  !typesOf("docs/readme.md", j("Хранение ", 'secret = "securely";')).includes(
+    "hardcoded_secret",
+  ),
+  "словарное слово вместо значения НЕ находка",
+);
+
+// ЛОЖНОЕ: повторяющийся символ — нулевая энтропия.
+expect(
+  !typesOf("src/config.ts", j("const ", 'password = "00000000";')).includes(
+    "hardcoded_secret",
+  ),
+  "значение из одного повторяющегося символа НЕ находка",
+);
+
+// ЛОЖНОЕ: camelCase-имя, помеченное как тестовое (нашлось в реальном прогоне).
+expect(
+  !typesOf("src/auth.test.ts", j("const test", 'Password = "testpass123";')).includes(
+    "hardcoded_secret",
+  ),
+  "testPassword (camelCase) НЕ находка",
+);
+
+// ЛОЖНОЕ: значения внутри файла-образца — заглушки по определению.
+expect(
+  !typesOf(".env.example", j("ZENITH_", 'API_KEY="zk', '_test_Ab9Qz7Lm3Np5"')).includes(
+    "hardcoded_secret",
+  ),
+  "значение в .env.example НЕ находка",
+);
+expect(
+  !typesOf("config.sample.ts", j("export const ", 'apiKey = "Ab9Qz7Lm3Np5Rt8";')).includes(
+    "hardcoded_secret",
+  ),
+  "значение в config.sample.ts НЕ находка",
+);
+
+// ЛОЖНОЕ: тестовый ключ с общепринятой пометкой _test_.
+expect(
+  !typesOf("src/pay.ts", j("const ", 'apiKey = "zk', '_test_Ab9Qz7Lm3Np5Rt8";')).includes(
+    "hardcoded_secret",
+  ),
+  "ключ с пометкой _test_ НЕ находка",
+);
+
+// НАСТОЯЩЕЕ: но настоящий ключ провайдера в файле-образце ловится и там —
+// правило hardcoded_secret отключено, правила провайдеров работают.
+expect(
+  typesOf(".env.example", j("OPENAI_", "API_KEY=", V.openai)).includes("openai_key"),
+  "настоящий ключ OpenAI в .env.example всё равно находится",
+);
+
+// НАСТОЯЩЕЕ: имя testimonialSecret не считается тестовым (проверка границы правила).
+expect(
+  typesOf("src/x.ts", j("const testimonial", 'Secret = "Xk7$mQ92pLz!4vBn";')).includes(
+    "hardcoded_secret",
+  ),
+  "testimonialSecret НЕ путается с тестовым именем — находка на месте",
+);
+
+// НАСТОЯЩЕЕ: сильный пароль со всеми классами символов.
+expect(
+  typesOf("src/db.ts", j("const db", 'Password = "Xk7$mQ92pLz!4vBn";')).includes(
+    "hardcoded_secret",
+  ),
+  "сильный пароль в коде — находка",
+);
+
+// НАСТОЯЩЕЕ: случайный hex-токен.
+expect(
+  typesOf("src/auth.ts", j("const ", 'apiKey = "a8f3d9c2b7e14056', 'f9a3d8c1b6e2049f";')).includes(
+    "hardcoded_secret",
+  ),
+  "случайный hex-токен в коде — находка",
+);
+
+// НАСТОЯЩЕЕ: слабый, но реальный пароль с цифрами — осознанно НЕ отсеиваем.
+expect(
+  typesOf("src/login.tsx", j("const admin", 'Password = "password123";')).includes(
+    "hardcoded_secret",
+  ),
+  "слабый пароль password123 — всё ещё находка (это реальная дыра)",
+);
+
+// НАСТОЯЩЕЕ: пароль базы в документации — находка (так и было в реальном прогоне).
+expect(
+  typesOf("docs/deploy.md", j("POSTGRES_", 'PASS', 'WORD = "Wm4Kt8Zc2Qh6Nb1";')).includes(
+    "hardcoded_secret",
+  ),
+  "пароль базы в документации — находка",
+);
+
+// НАСТОЯЩЕЕ: ключ провайдера в переменной с «шумным» именем всё равно ловится
+// своим правилом (не теряем детект из-за фильтра имён).
+expect(
+  typesOf("src/api.ts", j("const api", 'KeyHeader = "', V.openai, '";')).includes(
+    "openai_key",
+  ),
+  "настоящий ключ OpenAI ловится даже в переменной с именем ...Header",
+);
+
+// ============================================================================
+// Сквозная проверка на двух архивах-приложениях (аналог test-app-with-leaks.zip
+// и clean-app.zip, только собираются в памяти — отдельные файлы не нужны).
+// «Дырявое» приложение должно давать находки, аккуратное — оставаться чистым.
+// ============================================================================
+console.log("\nДва архива-приложения (сквозная проверка):");
+
+// 1) Приложение с утечками: полный набор типов.
+const leakyZip = zipSync({
+  "app/README.md": strToU8("# my app\nСобрано через Lovable."),
+  "app/.env": strToU8(
+    [
+      "VITE_SUPABASE_URL=https://abcdefghijklmnop.supabase.co",
+      j("SUPABASE_SERVICE_ROLE_KEY=", V.supabaseJwt),
+      j("OPENAI_", "API_KEY=", V.openai),
+    ].join("\n"),
+  ),
+  "app/src/config.ts": strToU8(j('export const stripeKey = "', V.stripeConfig, '";')),
+  "app/keys/deploy.pem": strToU8([V.pemHeader, V.pemBody, V.pemFooter].join("\n")),
+});
+const leakyFindings = scanFiles(filesFromZip(leakyZip)).findings;
+const leakyTypes = new Set(leakyFindings.map((f) => f.type));
+expect(leakyFindings.length > 0, "«дырявый» архив даёт находки");
+expect(
+  leakyFindings.some((f) => f.severity === "critical"),
+  "«дырявый» архив даёт критические находки",
+);
+for (const t of ["env_file", "openai_key", "supabase_service_role", "stripe_live_key", "private_key"]) {
+  expect(leakyTypes.has(t as never), `«дырявый» архив: найден ${t}`);
+}
+
+// 2) Аккуратное приложение: секреты только в переменных окружения.
+// Специально содержит все три бывших источника шума — и должно остаться чистым.
+const cleanZip = zipSync({
+  "app/README.md": strToU8("# my app\nНастрой переменные окружения в .env.local."),
+  "app/package.json": strToU8('{ "name": "my-app", "private": true }'),
+  "app/.env.example": strToU8(
+    ["VITE_SUPABASE_URL=your-project-url", "VITE_SUPABASE_ANON_KEY=your-anon-key"].join("\n"),
+  ),
+  "app/src/lib/supabase.ts": strToU8(
+    [
+      'import { createClient } from "@supabase/supabase-js";',
+      "export const supabase = createClient(",
+      "  import.meta.env.VITE_SUPABASE_URL,",
+      "  import.meta.env.VITE_SUPABASE_ANON_KEY,",
+      ");",
+    ].join("\n"),
+  ),
+  // Бывший шум №1: ключ собирается из переменной окружения.
+  "app/supabase/functions/sign/index.ts": strToU8(
+    [
+      "const privateKey = [",
+      j('  "', V.pemHeader, '",'),
+      "  Deno.env.get(\"GOOGLE_PRIVATE_KEY\"),",
+      j('  "', V.pemFooter, '",'),
+      '].join("\\n");',
+    ].join("\n"),
+  ),
+  // Бывший шум №2: название HTTP-заголовка и заглушка.
+  "app/src/api.ts": strToU8(
+    [
+      j("const api", 'KeyHeader = "X-API-Key";'),
+      j("const api", 'Key = "your-api-key-here";'),
+      "export { apiKeyHeader, apiKey };",
+    ].join("\n"),
+  ),
+  // Бывший шум №3: публичный тестовый ключ капчи.
+  "app/src/captcha.ts": strToU8(
+    j("export const turnstile", 'SiteKey = "1x', '00000000000000000000AA";'),
+  ),
+});
+const cleanFindings = scanFiles(filesFromZip(cleanZip)).findings;
+expect(
+  cleanFindings.length === 0,
+  `аккуратный архив остаётся чистым (найдено ${cleanFindings.length}: ${cleanFindings
+    .map((f) => `${f.type}@${f.file}`)
+    .join(", ")})`,
+);
 
 if (failed > 0) {
   console.log(`\n${failed} проверок провалено`);

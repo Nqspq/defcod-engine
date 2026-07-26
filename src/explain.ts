@@ -211,6 +211,28 @@ const CANNED: Record<FindingType, Record<Lang, Texts>> = {
       ],
     },
   },
+  env_file_public: {
+    en: {
+      title: ".env file in the repository (public values only)",
+      explanation:
+        "Your .env file is in the repository, but everything inside it is meant to be public anyway — things like your Supabase project URL and the anon key, which every visitor's browser already receives. Nothing is leaking right now. It is still a habit worth fixing: the day you add a real secret to this file, it goes straight to the repository with it.",
+      fix: [
+        "Add .env (and .env.local, .env.production) to .gitignore now, before a real secret lands in it.",
+        "Keep a .env.example in the repository instead: same variable names, no values.",
+        "No need to rotate anything — these particular values were never secret.",
+      ],
+    },
+    ru: {
+      title: "Файл .env в репозитории (внутри только публичные значения)",
+      explanation:
+        "Файл .env лежит в репозитории, но всё, что внутри, и так публично по замыслу — адрес проекта Supabase и anon-ключ, которые браузер каждого посетителя получает и без этого. Прямо сейчас ничего не утекает. Привычку всё равно стоит поправить: в тот день, когда в этот файл добавят настоящий секрет, он уедет в репозиторий вместе с ним.",
+      fix: [
+        "Добавь .env (и .env.local, .env.production) в .gitignore прямо сейчас, пока в нём не появился настоящий секрет.",
+        "Вместо него держи в репозитории .env.example: те же имена переменных, но без значений.",
+        "Менять эти значения не нужно — они и не были секретными.",
+      ],
+    },
+  },
 };
 
 // Дополнение для service_role в клиентском коде.
