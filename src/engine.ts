@@ -7,7 +7,9 @@ import {
   JWT_RE,
   KEY_RULES,
   PRIVATE_KEY_RE,
+  assignmentNameAt,
   classifyEnvFile,
+  isBrowserPublicName,
   hasPrivateKeyBody,
   isExampleFile,
   isLikelySecretValue,
@@ -129,10 +131,25 @@ export function scanFiles(files: ScannedFile[]): ScanOutput {
       for (const m of file.content.matchAll(rule.re)) {
         const secret = m[0];
         if (looksLikePlaceholder(secret)) continue;
+
+        let type = rule.type;
+        let severity = rule.severity;
+        // Ключ Google в переменной, которая по имени предназначена для браузера
+        // (…BROWSER_KEY, …PUBLIC_KEY): такой ключ по замыслу уходит на страницу,
+        // прятать его бессмысленно. Это не утечка, а «ограничь его по домену» —
+        // поэтому отдельный тип и уровень «совет», а не красное «критично».
+        if (rule.type === "google_key") {
+          const name = assignmentNameAt(file.content, m.index);
+          if (name && isBrowserPublicName(name)) {
+            type = "google_key_public";
+            severity = "info";
+          }
+        }
+
         push(
           {
-            type: rule.type,
-            severity: rule.severity,
+            type,
+            severity,
             file: file.path,
             line: lineNumberAt(file.content, m.index),
             masked: maskSecret(secret),

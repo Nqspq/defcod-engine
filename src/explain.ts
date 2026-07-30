@@ -211,6 +211,28 @@ const CANNED: Record<FindingType, Record<Lang, Texts>> = {
       ],
     },
   },
+  google_key_public: {
+    en: {
+      title: "Google API key meant for the browser (restrict it)",
+      explanation:
+        "This key sits in a variable whose name says it is a browser key — a Google Maps key, for example, is sent to every visitor's page and cannot be kept secret. So this is not a leak. What matters is that such a key must be restricted, otherwise anyone can copy it from your page and run up your Google bill.",
+      fix: [
+        "Open console.cloud.google.com → APIs & Services → Credentials and pick this key.",
+        "Under 'Application restrictions' allow only your own domains (HTTP referrers).",
+        "Under 'API restrictions' allow only the APIs you actually use, and set a daily quota.",
+      ],
+    },
+    ru: {
+      title: "Ключ Google API для браузера (нужно ограничить)",
+      explanation:
+        "Этот ключ лежит в переменной, имя которой прямо говорит: он для браузера. Ключ Google Maps, например, уезжает на страницу каждому посетителю, и спрятать его невозможно. Так что это не утечка. Важно другое: такой ключ обязательно надо ограничить, иначе любой может скопировать его с твоей страницы и накрутить тебе счёт от Google.",
+      fix: [
+        "Зайди в console.cloud.google.com → APIs & Services → Credentials и выбери этот ключ.",
+        "В «Application restrictions» разреши только свои домены (HTTP referrers).",
+        "В «API restrictions» оставь только те API, которыми правда пользуешься, и поставь дневную квоту.",
+      ],
+    },
+  },
   env_file_public: {
     en: {
       title: ".env file in the repository (public values only)",

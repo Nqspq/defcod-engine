@@ -17,7 +17,11 @@ export type FindingType =
   | "env_file"
   // .env в репозитории, но внутри только публичные по замыслу значения:
   // сами значения не секретны, поэтому уровень «совет», а не «критично».
-  | "env_file_public";
+  | "env_file_public"
+  // Ключ Google API, лежащий в переменной, которая по имени предназначена для
+  // браузера (…BROWSER_KEY и т.п.). Такой ключ не спрячешь — он уходит на страницу
+  // вместе с картой. Это не утечка, но его надо ограничить по домену: «совет».
+  | "google_key_public";
 
 export type Finding = {
   type: FindingType;
@@ -230,6 +234,13 @@ export function isKnownPublicTestValue(value: string): boolean {
   return KNOWN_PUBLIC_TEST_VALUES.some((re) => re.test(value));
 }
 
+// Значение — фраза из строчных слов через _ - или . (минимум два слова).
+const WORD_PHRASE_RE = /^[a-z]+(?:[-_.][a-z]+)+$/;
+
+// Значение содержит буквы вне латиницы (кириллица, CJK, арабица и т.п.).
+// Латиница с диакритикой (é, ü) сюда НЕ попадает — такой пароль возможен.
+const NON_LATIN_RE = /[^\u0020-\u024F]/;
+
 // Главный фильтр шума для hardcoded_secret: похоже ли это на настоящий секрет?
 // name — имя переменной, value — её значение.
 export function isLikelySecretValue(name: string, value: string): boolean {
@@ -259,6 +270,17 @@ export function isLikelySecretValue(name: string, value: string): boolean {
   // Одно словарное слово без цифр и символов — скорее подпись или текст, чем секрет.
   // (Настоящие слабые пароли вида "password123" содержат цифры и здесь не отсекаются.)
   if (/^[a-z]+$/.test(value) && value.length < 20) return false;
+
+  // Фраза из слов через _ - . : "user-provided-key", "a_different_secret".
+  // В коде так пишут описание или имя настройки, а не секрет: настоящие ключи и
+  // пароли практически всегда содержат цифры, заглавные буквы или символы.
+  // Компромисс осознанный: парольная фраза из одних строчных слов тоже отсеётся,
+  // но для нашей аудитории это гораздо более редкий случай, чем строка-описание.
+  if (WORD_PHRASE_RE.test(value)) return false;
+
+  // Значение написано не латиницей — это строка интерфейса (перевод), а не секрет.
+  // Ловится из-за слова password/secret в имени переменной: passwordMismatch = "パスワードが一致しません".
+  if (NON_LATIN_RE.test(value)) return false;
 
   // Достаточная энтропия: отсекаем повторы вида "aaaaaaaa" и "00000000".
   if (shannonEntropy(value) < 2.0) return false;
@@ -344,8 +366,16 @@ export const PUBLIC_ENV_NAMES = [
   "TURNSTILE_SITE_KEY",
   "RECAPTCHA_SITE_KEY",
   "HCAPTCHA_SITE_KEY",
-  // Карты — специально публичные токены
+  // Карты — специально публичные токены.
+  // Ключ Maps JavaScript API физически не может быть секретным: он уходит в браузер
+  // вместе со страницей. Защищают его не тайной, а ограничением по домену и квотами.
   "MAPBOX_PUBLIC_TOKEN",
+  "GOOGLE_MAPS_BROWSER_KEY",
+  "LOVABLE_CONNECTOR_GOOGLE_MAPS_BROWSER_KEY",
+  // Платежи — клиентские токены, которые провайдер сам отдаёт в браузер
+  "PAYMENTS_CLIENT_TOKEN",
+  "BRAINTREE_CLIENT_TOKEN",
+  "PAYPAL_CLIENT_TOKEN",
   // Адреса и окружение
   "APP_URL",
   "SITE_URL",
@@ -397,8 +427,45 @@ export const SENSITIVE_ENV_MARKERS = [
 // Значения, публичные по форме (не зависят от имени переменной).
 const PUBLIC_VALUE_RE = /^(?:sb_publishable_|pk_live_|pk_test_|https?:\/\/|\d+$)/;
 
+// Суффиксы имён, которыми разработчик сам объявляет значение браузерным.
+// Перечислять каждого вендора в PUBLIC_ENV_NAMES бессмысленно — их сотни,
+// а схема имён одна. Важно: CLIENT_SECRET сюда НЕ попадает.
+// Список открытый — пополняй по мере находок.
+export const PUBLIC_ENV_SUFFIXES = [
+  "BROWSER_KEY",
+  "PUBLIC_KEY",
+  "PUBLIC_TOKEN",
+  "CLIENT_TOKEN",
+  "PUBLISHABLE_KEY",
+  "SITE_KEY",
+];
+
+// Имя переменной, которой присваивается значение в найденной строке.
+// Нужно, чтобы понять контекст ключа: и `VITE_..._BROWSER_KEY=AIza…` в .env,
+// и `const mapsBrowserKey = "AIza…"` в коде.
+export function assignmentNameAt(content: string, index: number): string | null {
+  const lineStart = content.lastIndexOf("\n", Math.max(0, index - 1)) + 1;
+  const before = content.slice(lineStart, index);
+  // Последнее имя перед = или : в этой строке.
+  const m = before.match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*[:=]\s*[^=]*$/);
+  return m ? m[1] : null;
+}
+
+// Имя переменной прямо говорит, что значение предназначено для браузера.
+export function isBrowserPublicName(key: string): boolean {
+  const bare = stripPublicPrefix(key);
+  if (PUBLIC_ENV_NAMES.includes(bare)) return true;
+  return PUBLIC_ENV_SUFFIXES.some((suffix) => bare.endsWith(suffix));
+}
+
+// Приводим имя к UPPER_SNAKE_CASE, чтобы одинаково сравнивать со списками
+// и переменную окружения VITE_MAPS_BROWSER_KEY, и переменную в коде mapsBrowserKey.
+function normalizeName(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
+}
+
 function stripPublicPrefix(key: string): string {
-  const upper = key.toUpperCase();
+  const upper = normalizeName(key);
   for (const prefix of PUBLIC_ENV_PREFIXES) {
     if (upper.startsWith(prefix)) return upper.slice(prefix.length);
   }
@@ -409,17 +476,24 @@ function stripPublicPrefix(key: string): string {
 export function isPublicEnvVar(key: string, value: string): boolean {
   const bare = stripPublicPrefix(key);
 
-  // Значение — настоящий ключ провайдера или мастер-ключ базы: всегда чувствительно,
-  // как бы переменная ни называлась.
-  if (looksLikeProviderKey(value)) return false;
+  // Мастер-ключ базы и приватный ключ не бывают публичными НИКОГДА, как бы
+  // переменная ни называлась. Эти две проверки идут первыми и не перебиваются.
   if (isServiceRoleJwt(value)) return false;
   if (PRIVATE_KEY_HEADER_RE.test(value)) return false;
 
+  // Имя прямо объявляет значение браузерным (…BROWSER_KEY, …CLIENT_TOKEN,
+  // …PUBLISHABLE_KEY или точное совпадение со списком публичных).
+  // Стоит ВЫШЕ проверки на ключ провайдера нарочно: ключ Google Maps выглядит как
+  // обычный AIza-ключ, но по замыслу уезжает в браузер, и «критично» на нём — ложь.
+  // Настоящие ключи других провайдеров это не прячет: правила KEY_RULES работают
+  // отдельно от разбора .env и сработают всё равно.
+  if (isBrowserPublicName(key)) return true;
+
+  // Значение — настоящий ключ провайдера: чувствительно.
+  if (looksLikeProviderKey(value)) return false;
+
   // Явно публичный anon-ключ Supabase.
   if (isAnonJwt(value)) return true;
-
-  // Имя в списке публичных.
-  if (PUBLIC_ENV_NAMES.includes(bare)) return true;
 
   // Имя содержит чувствительный маркер.
   if (SENSITIVE_ENV_MARKERS.some((marker) => bare.includes(marker))) return false;

@@ -10,6 +10,7 @@
 
 import { zipSync, strToU8 } from "fflate";
 import { scanFiles, type ScannedFile } from "../src/engine";
+import * as rules from "../src/rules";
 import { cannedExplanations } from "../src/explain";
 import { parseGitHubUrl, ScanUserError } from "../src/github";
 import { filesFromZip } from "../src/zip";
@@ -660,6 +661,159 @@ expect(
 );
 
 // ============================================================================
+// v0.1.2 — два дополнения по итогам повторного прогона по 54 репозиториям.
+// 1) hardcoded_secret: убираем значения-фразы и строки интерфейса.
+// 2) .env и ключи Google: браузерные (публичные по замыслу) значения перестают
+//    быть «критично». Красное «критично» на публичном клиентском токене — ложь,
+//    и технически грамотный читатель это сразу видит.
+// ============================================================================
+
+// --- Дополнение 1: значения-фразы и текст интерфейса ---
+console.log("\nv0.1.2 — фразы и текст интерфейса в hardcoded_secret:");
+
+const phrases = [
+  j("const ", 'apiKey = "user-provided-key";'),
+  j("const ", 'secret = "a_different_secret";'),
+  j("const ", 'password = "some.descriptive.value";'),
+];
+for (const line of phrases) {
+  expect(
+    !typesOf("src/config.ts", line).includes("hardcoded_secret"),
+    `значение-фраза НЕ находка: ${line.slice(0, 44)}…`,
+  );
+}
+
+// Строки интерфейса на других алфавитах (ловились из-за слова password в имени).
+expect(
+  !typesOf("src/i18n/ja.ts", j("  password", 'Mismatch: "パスワードが一致しません",')).includes(
+    "hardcoded_secret",
+  ),
+  "японская строка интерфейса НЕ находка",
+);
+expect(
+  !typesOf("src/i18n/ru.ts", j("  password", 'Hint: "Пароль должен быть длиннее",')).includes(
+    "hardcoded_secret",
+  ),
+  "русская строка интерфейса НЕ находка",
+);
+
+// НАСТОЯЩЕЕ: фраза с цифрой — уже не «фраза из слов», детект сохраняем.
+expect(
+  typesOf("src/db.ts", j("const db", 'Password = "correct-horse-9-staple";')).includes(
+    "hardcoded_secret",
+  ),
+  "парольная фраза с цифрой — находка",
+);
+// НАСТОЯЩЕЕ: латиница с диакритикой НЕ считается «другим алфавитом».
+expect(
+  typesOf("src/db.ts", j("const admin", 'Password = "Café-Süd-92!";')).includes(
+    "hardcoded_secret",
+  ),
+  "пароль с é и ü — находка (диакритика это не другой алфавит)",
+);
+
+// --- Дополнение 2: браузерные публичные значения ---
+console.log("\nv0.1.2 — браузерные публичные значения:");
+
+const mapsKey = j("AI", "za", "SyB12345678", "90abcdefghij", "klmnopqrstuv");
+
+// .env с браузерным ключом карт и клиентским токеном платежей.
+const envBrowser = [
+  "VITE_SUPABASE_URL=https://abcdefghijklmnop.supabase.co",
+  j("VITE_LOVABLE_CONNECTOR_GOOGLE_MAPS_BROWSER_KEY=", mapsKey),
+  j("VITE_PAYMENTS_CLIENT_TOKEN=", "Ab9Qz7Lm3Np5Rt8Vw2Xy4Cd6Ef1Gh0Jk"),
+].join("\n");
+const browserFindings = scanOne(".env", envBrowser);
+expect(
+  !browserFindings.some((f) => f.severity === "critical"),
+  "публичные клиентские токены больше НЕ дают «критично»",
+);
+expect(
+  browserFindings.some((f) => f.type === "env_file_public"),
+  ".env с браузерными значениями → env_file_public",
+);
+expect(
+  browserFindings.some((f) => f.type === "google_key_public" && f.severity === "info"),
+  "ключ Google Maps в браузерной переменной → google_key_public, уровень «совет»",
+);
+
+// НАСТОЯЩЕЕ: серверный ключ Google остаётся критичным.
+const envServerKey = j("GOOGLE_PLACES_", "API_KEY=", mapsKey);
+const serverFindings = scanOne(".env", envServerKey);
+expect(
+  serverFindings.some((f) => f.type === "google_key" && f.severity === "critical"),
+  "серверный ключ Google Places остаётся критичным",
+);
+expect(
+  serverFindings.some((f) => f.type === "env_file" && f.severity === "critical"),
+  ".env с серверным ключом Google остаётся критичным",
+);
+
+// НАСТОЯЩЕЕ: ключ Google в обычной переменной без «браузерного» имени — критично.
+expect(
+  typesOf("src/config.ts", j("const ", 'key = "', mapsKey, '";')).includes("google_key"),
+  "ключ Google в обычной переменной остаётся critical-типом",
+);
+
+// НАСТОЯЩЕЕ: то же имя в клиентском коде — понижаем и там (ключ всё равно в браузере).
+expect(
+  typesOf("src/Map.tsx", j("const maps", 'BrowserKey = "', mapsKey, '";')).includes(
+    "google_key_public",
+  ),
+  "браузерное имя в клиентском коде тоже даёт «совет»",
+);
+
+// ГРАНИЦЫ: имя не должно перебивать по-настоящему опасное содержимое.
+expect(
+  scanOne(".env", j("MY_PUBLIC_KEY=", V.supabaseJwt)).some(
+    (f) => f.type === "env_file" && f.severity === "critical",
+  ),
+  "service_role в переменной с именем ...PUBLIC_KEY — всё равно критично",
+);
+expect(
+  scanOne(".env", j("APP_PUBLIC_KEY=", V.pemHeader, "\\n", V.pemBody.split("\n").join("\\n"))).some(
+    (f) => f.severity === "critical",
+  ),
+  "приватный ключ в переменной с именем ...PUBLIC_KEY — всё равно критично",
+);
+expect(
+  !rules.isBrowserPublicName("GOOGLE_CLIENT_SECRET"),
+  "CLIENT_SECRET не считается браузерным именем",
+);
+expect(
+  rules.isBrowserPublicName("VITE_PAYMENTS_CLIENT_TOKEN") &&
+    rules.isBrowserPublicName("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY"),
+  "клиентский токен и publishable-ключ считаются браузерными",
+);
+
+// СТРАХОВКА: если в браузерной переменной окажется настоящий ключ ДРУГОГО провайдера,
+// правило провайдера сработает всё равно — понижение .env его не прячет.
+expect(
+  scanOne(".env", j("VITE_APP_PUBLIC_KEY=", V.openai)).some(
+    (f) => f.type === "openai_key" && f.severity === "critical",
+  ),
+  "ключ OpenAI в «публичной» переменной всё равно ловится как критичный",
+);
+
+// У нового типа есть тексты на обоих языках.
+const gkExplained = cannedExplanations(
+  scanOne(".env", envBrowser).filter((f) => f.type === "google_key_public"),
+);
+expect(
+  gkExplained.every(
+    (f) =>
+      f.texts.en.title &&
+      f.texts.en.explanation &&
+      f.texts.en.fix.length > 0 &&
+      f.texts.ru.title &&
+      f.texts.ru.explanation &&
+      f.texts.ru.fix.length > 0 &&
+      f.texts.en.title !== f.texts.ru.title,
+  ),
+  "у google_key_public есть объяснение и шаги починки на обоих языках",
+);
+
+// ============================================================================
 // Сквозная проверка на двух архивах-приложениях (аналог test-app-with-leaks.zip
 // и clean-app.zip, только собираются в памяти — отдельные файлы не нужны).
 // «Дырявое» приложение должно давать находки, аккуратное — оставаться чистым.
@@ -728,6 +882,12 @@ const cleanZip = zipSync({
   // Бывший шум №3: публичный тестовый ключ капчи.
   "app/src/captcha.ts": strToU8(
     j("export const turnstile", 'SiteKey = "1x', '00000000000000000000AA";'),
+  ),
+  // Бывший шум №4 (v0.1.2): значение-фраза вместо секрета.
+  "app/src/settings.ts": strToU8(j("export const ", 'apiKey = "user-provided-key";')),
+  // Бывший шум №5 (v0.1.2): строка интерфейса на другом алфавите.
+  "app/src/i18n/ja.ts": strToU8(
+    j("export default { password", 'Mismatch: "パスワードが一致しません" };'),
   ),
 });
 const cleanFindings = scanFiles(filesFromZip(cleanZip)).findings;

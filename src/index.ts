@@ -15,7 +15,10 @@ export {
 export {
   PUBLIC_ENV_NAMES,
   PUBLIC_ENV_PREFIXES,
+  PUBLIC_ENV_SUFFIXES,
   SENSITIVE_ENV_MARKERS,
+  isBrowserPublicName,
+  assignmentNameAt,
   KNOWN_PUBLIC_TEST_VALUES,
   classifyEnvFile,
   isPublicEnvVar,
