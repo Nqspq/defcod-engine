@@ -1,6 +1,6 @@
 {
   "name": "defcod-engine",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "In-memory secret-leak scanner for AI-built apps: leaked API keys, committed .env files, Supabase service_role in client code. Nothing touches disk, nothing is stored.",
   "license": "MIT",
   "author": "Nqspq",

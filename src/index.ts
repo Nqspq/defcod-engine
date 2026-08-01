@@ -34,6 +34,7 @@ export {
   parseGitHubUrl,
   ScanUserError,
   type ScanErrorCode,
+  type FetchRepoOptions,
 } from "./github";
 export { filesFromZip, looksLikeZip, MAX_ZIP_BYTES } from "./zip";
 export {

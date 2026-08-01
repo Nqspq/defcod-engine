@@ -1,6 +1,9 @@
-// Скачивание публичного GitHub-репозитория для сканирования.
-// Архив распаковывается ПРЯМО В ПАМЯТИ — на диск ничего не пишем,
-// поэтому после ответа от кода не остаётся ни одного файла.
+// Скачивание GitHub-репозитория для сканирования.
+// Публичные репозитории качаются без токена; с токеном пользователя
+// (GitHub OAuth) доступны и его приватные. Архив распаковывается
+// ПРЯМО В ПАМЯТИ — на диск ничего не пишем, поэтому после ответа
+// от кода не остаётся ни одного файла. Токен нигде не сохраняется
+// и не логируется — он живёт только в заголовке запроса к GitHub.
 
 import { gunzipSync } from "zlib";
 import type { ScannedFile } from "./engine";
@@ -18,6 +21,8 @@ export type ScanErrorCode =
   | "too_big"
   | "download_failed"
   | "empty_repo"
+  // Токен GitHub протух или отозван (401 от GitHub API):
+  | "auth_failed"
   // Коды режима загрузки ZIP:
   | "bad_zip"
   | "empty_zip"
@@ -51,18 +56,44 @@ export function parseGitHubUrl(input: string): { owner: string; repo: string } {
   return { owner, repo };
 }
 
-// Скачиваем tar.gz основной ветки, считая байты, чтобы не превысить лимит.
-async function downloadArchive(owner: string, repo: string): Promise<Buffer> {
-  const url = `https://codeload.github.com/${owner}/${repo}/tar.gz/HEAD`;
-  let res: Response;
+// Один HTTP-запрос за архивом. Токен (если есть) уходит только в заголовке
+// Authorization; при редиректе на другой домен fetch снимает его сам.
+async function requestArchive(url: string, token?: string): Promise<Response> {
+  const headers: Record<string, string> = { "User-Agent": "defcod-scanner" };
+  if (token) headers.Authorization = `Bearer ${token}`;
   try {
-    res = await fetch(url, {
+    return await fetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { "User-Agent": "defcod-scanner" },
+      headers,
     });
   } catch {
     throw new ScanUserError("download_failed");
   }
+}
+
+// Скачиваем tar.gz основной ветки, считая байты, чтобы не превысить лимит.
+async function downloadArchive(
+  owner: string,
+  repo: string,
+  token?: string,
+): Promise<Buffer> {
+  // Сначала публичный путь — он не требует токена и не зависит от его свежести.
+  let res = await requestArchive(
+    `https://codeload.github.com/${owner}/${repo}/tar.gz/HEAD`,
+  );
+
+  // Публично не нашли, но есть токен пользователя — пробуем через GitHub API:
+  // так открываются его приватные репозитории. 401 значит, что токен протух
+  // или отозван; 404 — репозитория нет или у аккаунта нет к нему доступа
+  // (GitHub нарочно не различает эти случаи).
+  if (res.status === 404 && token) {
+    res = await requestArchive(
+      `https://api.github.com/repos/${owner}/${repo}/tarball`,
+      token,
+    );
+    if (res.status === 401) throw new ScanUserError("auth_failed");
+  }
+
   if (res.status === 404) throw new ScanUserError("not_found");
   if (!res.ok || !res.body) throw new ScanUserError("download_failed");
 
@@ -138,12 +169,19 @@ function untar(tarBuf: Buffer): ScannedFile[] {
   return files;
 }
 
+export type FetchRepoOptions = {
+  // GitHub-токен вошедшего пользователя — открывает его приватные репозитории.
+  // Используется только как заголовок запроса, нигде не сохраняется.
+  token?: string;
+};
+
 // Главная функция: ссылка → список текстовых файлов репозитория (в памяти).
 export async function fetchRepoFiles(
   repoUrl: string,
+  options: FetchRepoOptions = {},
 ): Promise<{ repo: string; files: ScannedFile[] }> {
   const { owner, repo } = parseGitHubUrl(repoUrl);
-  const archive = await downloadArchive(owner, repo);
+  const archive = await downloadArchive(owner, repo, options.token);
 
   let tarBuf: Buffer;
   try {

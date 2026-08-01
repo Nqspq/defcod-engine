@@ -13,7 +13,9 @@ site: **what exactly we scan for** and **that scanned code is never stored**.
 A small TypeScript library, no framework attached:
 
 - **Input** — one of:
-  - a public GitHub repository URL,
+  - a GitHub repository URL — public, or private with a user token
+    (`fetchRepoFiles(url, { token })`; the token is only ever sent to GitHub
+    as a request header, never stored or logged),
   - a ZIP archive as bytes,
   - a plain list of `{ path, content }` files.
 - **Output** — a list of findings: type, severity, file, line numbers, a **masked**

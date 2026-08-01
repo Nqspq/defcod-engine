@@ -3,6 +3,31 @@
 All notable changes to defcod-engine are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-08-01
+
+Private repositories. `fetchRepoFiles` can now download a repository the user
+has access to on GitHub, using a token the consumer passes in.
+
+### Added
+
+- `fetchRepoFiles(repoUrl, options?)` — new optional second argument
+  (`FetchRepoOptions`) with a `token` field. The public path is always tried
+  first, so public repositories never depend on the token being fresh; only on
+  a 404 with a token present does the engine retry via
+  `api.github.com/repos/{owner}/{repo}/tarball` with an `Authorization` header.
+  The token is used solely as a request header — it is never stored, logged or
+  included in any error.
+- `auth_failed` member of `ScanErrorCode` — GitHub answered 401 to the
+  authorized request, i.e. the token is expired or revoked.
+
+### Notes
+
+- GitHub deliberately answers 404 both for a repository that does not exist and
+  for a private one the token's account cannot access, so those remain a single
+  `not_found` error.
+- Consumers that map `ScanErrorCode` exhaustively need to handle `auth_failed`.
+- Calls without the second argument behave exactly as in 0.1.x.
+
 ## [0.1.2] — 2026-07-30
 
 Follow-up to the noise work in 0.1.1, driven by a second run across 54 public
