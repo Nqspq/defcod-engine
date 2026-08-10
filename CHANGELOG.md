@@ -3,6 +3,38 @@
 All notable changes to defcod-engine are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-08-10
+
+Git history scan: keys that were committed and then "deleted" are still
+visible to anyone in the repository's change history on GitHub.
+
+### Added
+
+- `fetchRepoHistory(repoUrl, options?)` — downloads the last N commits
+  (default 50, max 100) via the GitHub REST API and extracts the **added**
+  lines of each commit's diff. Merge commits are skipped (their diffs
+  duplicate branch commits). A time budget (default 20 s) stops the fetch
+  early and reports `partial: true`. Practically requires a user token:
+  unauthenticated GitHub REST allows only 60 requests/hour per IP.
+- `scanRepoHistory(history, currentFiles)` — scans added lines with the
+  critical-severity rules only (provider keys, Supabase `service_role` JWT,
+  private keys). Deduplication: a secret still present in the current code
+  produces no history card; one secret across many commits produces one card.
+  Each finding carries `inHistory: true` and `historyVariant`
+  (`file_deleted` | `value_removed`).
+- History findings get their own canned EN/RU explanation: the primary
+  advice is to create a new key at the provider (the old one stops working);
+  rewriting git history is deliberately never suggested.
+- `extractAddedLines`, `HISTORY_PROVIDER_LABEL` and the new types exported.
+- 13 new offline test assertions for the history scan.
+
+### Notes
+
+- `Finding` gained optional fields (`inHistory`, `historyVariant`,
+  `commitSha`, `commitDate`) — additive, no breaking changes.
+- Lower-severity rules (`hardcoded_secret`, `env_file` grading) deliberately
+  do not run on history diffs: too noisy there.
+
 ## [0.2.0] — 2026-08-01
 
 Private repositories. `fetchRepoFiles` can now download a repository the user

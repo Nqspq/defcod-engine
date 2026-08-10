@@ -4,6 +4,8 @@
 // (если нужно) — забота приложения поверх движка, не самого движка.
 
 import type { Finding, FindingType } from "./rules";
+// Провайдер для советов исторической карточки («зайди к провайдеру…»).
+import { HISTORY_PROVIDER_LABEL } from "./history";
 
 // Языки заготовленных объяснений.
 export type Lang = "en" | "ru";
@@ -263,8 +265,40 @@ const CLIENT_CODE_NOTE: Record<Lang, string> = {
   ru: " Найден в КЛИЕНТСКОМ коде — это худший случай: ключ уезжает в браузер каждому посетителю.",
 };
 
+// Тексты для находки из ИСТОРИИ git — одинаковые для всех типов ключей,
+// различается только имя провайдера. Формулировки согласованы дословно:
+// главный совет — создать НОВЫЙ ключ (старый перестанет работать),
+// переписывание истории git не советуем вовсе.
+function historyFor(f: Finding, lang: Lang): FindingTexts {
+  const provider = HISTORY_PROVIDER_LABEL[f.type];
+  if (lang === "ru") {
+    return {
+      title: "Найдено в старой версии вашего кода",
+      explanation:
+        "Вы удалили этот ключ, но GitHub помнит каждое изменение. Любой может открыть историю вашего репозитория и прочитать старую версию — вместе с ключом. Удаление его не спрятало. " +
+        "Уже создали новый ключ? Тогда всё в порядке — старый в истории безвреден.",
+      fix: [
+        `Зайдите к провайдеру${provider ? ` (${provider})` : ""} и создайте новый ключ. Старый перестанет работать — и уже неважно, кто его увидит.`,
+        "Никогда не вставляйте новый ключ в код. У вашей платформы есть место для ключей: Settings → Environment Variables.",
+      ],
+    };
+  }
+  return {
+    title: "Found in an old version of your code",
+    explanation:
+      "You deleted this key, but GitHub remembers every change ever made. Anyone can open your repo's history and read the old version — with the key in it. Deleting it did not hide it. " +
+      "Already created a new key? Then you're fine — the old one in the history is harmless.",
+    fix: [
+      `Go to your provider${provider ? ` (${provider})` : ""} and create a new key. The old one stops working — and it no longer matters who sees it.`,
+      "Never put the new key in your code. Your platform has a place for keys: Settings → Environment Variables.",
+    ],
+  };
+}
+
 // Заготовленные тексты одной находки для одного языка.
 function cannedFor(f: Finding, lang: Lang): FindingTexts {
+  // Историческая находка — свои тексты, тип влияет только на имя провайдера.
+  if (f.inHistory) return historyFor(f, lang);
   const t = CANNED[f.type][lang];
   const extra =
     f.type === "supabase_service_role" && f.inClientCode

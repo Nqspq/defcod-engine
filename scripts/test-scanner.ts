@@ -13,6 +13,7 @@ import { scanFiles, type ScannedFile } from "../src/engine";
 import * as rules from "../src/rules";
 import { cannedExplanations } from "../src/explain";
 import { parseGitHubUrl, ScanUserError } from "../src/github";
+import { extractAddedLines, scanRepoHistory } from "../src/history";
 import { filesFromZip } from "../src/zip";
 
 // --- Тест-векторы (фейковые ключи), собираются из кусочков в рантайме ---
@@ -896,6 +897,120 @@ expect(
   `аккуратный архив остаётся чистым (найдено ${cleanFindings.length}: ${cleanFindings
     .map((f) => `${f.type}@${f.file}`)
     .join(", ")})`,
+);
+
+// --- Скан истории git (офлайн, на синтетических диффах) ---
+// Сеть не нужна: fetchRepoHistory тут не зовём, проверяем разбор patch-текста
+// и сам скан диффов (scanRepoHistory) с дедупликацией и вариантами карточки.
+
+console.log("\nПроверки истории git:");
+
+// 1. Из patch берутся только добавленные строки (без заголовков и удалений).
+const patch = [
+  "@@ -1,3 +1,4 @@",
+  "+++ b/src/x.ts",
+  " const a = 1;",
+  "-const old = 2;",
+  "+const fresh = 3;",
+  "+const more = 4;",
+].join("\n");
+expect(
+  extractAddedLines(patch) === "const fresh = 3;\nconst more = 4;",
+  "extractAddedLines берёт только добавленные строки",
+);
+
+// 2. Синтетическая история: ключ добавили и потом «удалили».
+const historyCurrentFiles = [
+  // Файл существует и сейчас, но ключа в нём уже нет.
+  { path: "src/app.ts", content: "export const ok = true;" },
+  // Этот ключ до сих пор в коде — историческая карточка не нужна.
+  { path: "src/maps.ts", content: j("const k = \"", V.googleZip, "\";") },
+];
+const historyResult = scanRepoHistory(
+  {
+    commits: [
+      {
+        sha: "abc1234",
+        date: "2026-05-12T10:00:00Z",
+        files: [
+          // Файл удалён из текущего кода → вариант file_deleted.
+          { path: "old-config.ts", addedText: j("const key = \"", V.openai, "\";") },
+          // Файл жив, значение убрано → вариант value_removed.
+          { path: "src/app.ts", addedText: j("const s = \"", V.stripeConfig, "\";") },
+          // Ключ всё ещё в текущем коде → подавляется.
+          { path: "src/maps.ts", addedText: j("const k = \"", V.googleZip, "\";") },
+          // Заглушка → не находка.
+          { path: "src/demo.ts", addedText: j("const d = \"sk-", "your-api-key-here-xxxx\";") },
+        ],
+      },
+      {
+        sha: "def5678",
+        date: "2026-05-13T10:00:00Z",
+        // Тот же ключ OpenAI во втором коммите → карточка остаётся одна.
+        files: [{ path: "old-config.ts", addedText: j("again = \"", V.openai, "\";") }],
+      },
+    ],
+    commitsChecked: 2,
+    partial: false,
+  },
+  historyCurrentFiles,
+);
+const hTypes = historyResult.findings.map((f) => `${f.type}@${f.file}`);
+expect(
+  hTypes.includes("openai_key@old-config.ts"),
+  "ключ из удалённого файла найден в истории",
+);
+expect(
+  historyResult.findings.every((f) => f.inHistory === true && f.severity === "critical"),
+  "исторические находки помечены inHistory и критичны",
+);
+expect(
+  historyResult.findings.find((f) => f.file === "old-config.ts")?.historyVariant ===
+    "file_deleted",
+  "удалённый файл → вариант file_deleted",
+);
+expect(
+  historyResult.findings.find((f) => f.file === "src/app.ts")?.historyVariant ===
+    "value_removed",
+  "живой файл без значения → вариант value_removed",
+);
+expect(
+  !hTypes.includes("google_key@src/maps.ts"),
+  "секрет, который ещё в коде, не дублируется исторической карточкой",
+);
+expect(
+  historyResult.findings.filter((f) => f.type === "openai_key").length === 1,
+  "один секрет в двух коммитах → одна карточка",
+);
+expect(
+  hTypes.every((t) => !t.includes("src/demo.ts")),
+  "заглушка в истории не считается находкой",
+);
+expect(
+  historyResult.findings.every((f) => !f.masked.includes(openaiBody)),
+  "секрет из истории замаскирован (тела ключа нет в отчёте)",
+);
+
+// 3. Тексты исторической карточки: дословные, с провайдером по типу.
+const hExplained = cannedExplanations(historyResult.findings);
+const hOpenai = hExplained.find((f) => f.type === "openai_key")!;
+expect(
+  hOpenai.texts.ru.title === "Найдено в старой версии вашего кода" &&
+    hOpenai.texts.en.title === "Found in an old version of your code",
+  "заголовок исторической карточки — согласованный",
+);
+expect(
+  hOpenai.texts.en.fix[0].includes("(OpenAI)") && hOpenai.texts.ru.fix[0].includes("(OpenAI)"),
+  "в совете подставлен провайдер по типу находки",
+);
+expect(
+  hOpenai.texts.en.explanation.includes("Deleting it did not hide it") &&
+    hOpenai.texts.ru.explanation.includes("Удаление его не спрятало"),
+  "объяснение — согласованное, про видимость в истории",
+);
+expect(
+  hOpenai.texts.en.fix.every((s) => !/rewrit|filter-repo|история git/i.test(s)),
+  "совета «переписать историю git» в карточке нет",
 );
 
 if (failed > 0) {

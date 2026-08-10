@@ -38,6 +38,16 @@ export {
 } from "./github";
 export { filesFromZip, looksLikeZip, MAX_ZIP_BYTES } from "./zip";
 export {
+  fetchRepoHistory,
+  scanRepoHistory,
+  extractAddedLines,
+  HISTORY_PROVIDER_LABEL,
+  type FetchHistoryOptions,
+  type HistoryFetchResult,
+  type HistoryScanResult,
+  type CommitDiff,
+} from "./history";
+export {
   cannedExplanations,
   type ExplainedFinding,
   type FindingTexts,

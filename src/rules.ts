@@ -34,6 +34,14 @@ export type Finding = {
   masked: string;
   // Для service_role: нашли ли его в клиентском коде (это хуже всего).
   inClientCode?: boolean;
+  // Находка из ИСТОРИИ git: секрета в текущем коде уже нет, но он виден
+  // в старых версиях на GitHub. Заполняется сканом истории (history.ts).
+  inHistory?: boolean;
+  // file_deleted — файла уже нет; value_removed — файл есть, значение убрано.
+  historyVariant?: "file_deleted" | "value_removed";
+  // Служебные данные (в интерфейсе не показываются).
+  commitSha?: string;
+  commitDate?: string;
 };
 
 // Маскируем секрет: первые символы + **** . Целиком не показываем никогда.
