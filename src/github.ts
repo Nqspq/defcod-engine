@@ -9,11 +9,11 @@ import { gunzipSync } from "zlib";
 import type { ScannedFile } from "./engine";
 
 // Лимиты: маленькие проекты — наша аудитория, большие вежливо отклоняем.
-const MAX_ARCHIVE_BYTES = 30 * 1024 * 1024; // ~30 МБ сжатого архива
-const MAX_UNPACKED_BYTES = 120 * 1024 * 1024; // защита от «архивных бомб»
+const MAX_ARCHIVE_BYTES = 60 * 1024 * 1024; // ~60 МБ сжатого архива
+const MAX_UNPACKED_BYTES = 300 * 1024 * 1024; // защита от «архивных бомб» (память: ~2.5x этого размера)
 const MAX_FILE_BYTES = 512 * 1024; // файлы больше 512 КБ пропускаем
-const MAX_FILES = 4000;
-const FETCH_TIMEOUT_MS = 25_000;
+const MAX_FILES = 8000;
+const FETCH_TIMEOUT_MS = 40_000; // 60 МБ на медленной сети
 
 export type ScanErrorCode =
   | "bad_url"

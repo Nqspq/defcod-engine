@@ -3,6 +3,18 @@
 All notable changes to defcod-engine are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-08-11
+
+Raised repository size limits, based on measurements (download is the only
+slow phase; memory, not CPU, is the real constraint — RSS ≈ 2.5× unpacked).
+
+### Changed
+
+- `MAX_ARCHIVE_BYTES` 30 → 60 MB, `MAX_UNPACKED_BYTES` 120 → 300 MB
+  (peak memory ~850 MB, safe on a 2 GB serverless instance),
+  `MAX_FILES` 4000 → 8000, download timeout 25 → 40 s.
+- ZIP limits are unchanged.
+
 ## [0.3.0] — 2026-08-10
 
 Git history scan: keys that were committed and then "deleted" are still
