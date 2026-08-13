@@ -3,6 +3,16 @@
 All notable changes to defcod-engine are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] — 2026-08-13
+
+### Changed
+
+- `fetchRepoHistory` default diff concurrency 6 → 2. GitHub applies a
+  secondary (abuse) rate limit to bursts of parallel requests even within the
+  primary quota; a large repository's history scan at concurrency 6 could trip
+  it and make the whole history fetch throw. 2 is safe. Callers can still pass
+  an explicit `concurrency`.
+
 ## [0.3.1] — 2026-08-11
 
 Raised repository size limits, based on measurements (download is the only

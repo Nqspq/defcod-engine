@@ -90,7 +90,10 @@ export async function fetchRepoHistory(
   const { owner, repo } = parseGitHubUrl(repoUrl);
   const maxCommits = Math.min(options.maxCommits ?? 50, 100);
   const timeBudgetMs = options.timeBudgetMs ?? 20_000;
-  const concurrency = options.concurrency ?? 6;
+  // Параллельность диффов держим низкой: GitHub включает вторичный
+  // (abuse) rate-лимit на всплески параллельных запросов даже в пределах
+  // основного лимита. 2 — безопасно для больших репозиториев.
+  const concurrency = options.concurrency ?? 2;
   const startedAt = Date.now();
 
   const listRes = await apiGet(
